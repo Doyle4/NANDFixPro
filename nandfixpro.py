@@ -1497,6 +1497,7 @@ class SwitchGuiApp(tk.Tk):
         # Split NAND context: set when user selects a split NAND part (00, rawnand.bin.00, etc.)
         self._split_nand_context = None
         self._joined_nand_path = None
+        self._split_output_dir = None
 
         # Console type override variables
         self.override_console_type = tk.BooleanVar(value=False)
@@ -2866,6 +2867,7 @@ class SwitchGuiApp(tk.Tk):
         self.paths["output_l3"].set("")  # Clear Level 3 output folder
         self._split_nand_context = None
         self._joined_nand_path = None
+        self._split_output_dir = None
         self._save_config()
 
         # 4. Reset the donor PRODINFO flag
@@ -4799,7 +4801,11 @@ class SwitchGuiApp(tk.Tk):
         if not self._split_nand_context:
             return
         context = self._split_nand_context
-        output_dir = Path(temp_dir) / "joint_nand"
+        if context['format'] == 'emummc_sd':
+            output_dir = Path(temp_dir).parent / f"nandfixpro_output_{Path(temp_dir).name}"
+        else:
+            output_dir = Path(temp_dir) / "joint_nand"
+        self._split_output_dir = output_dir
         self._log(f"\n[POST-STEP] Re-splitting fixed NAND into {output_dir} ...")
         if not self._split_nand_output(fixed_nand_path, str(output_dir), context):
             return
@@ -5020,13 +5026,19 @@ class SwitchGuiApp(tk.Tk):
             # If source was split NAND, re-split the fixed output
             self._resplit_if_needed(nand_source, boot0_output, boot1_output, temp_dir)
 
-            self._dialog("Level 1 Complete",
-                         f"Level 1 process completed successfully!\n\n" +
-                         f"Updated NAND: {nand_source}\n" +
-                         f"BOOT0: {boot0_output}\n" +
-                         f"BOOT1: {boot1_output}\n\n" +
-                         (f"Re-split output: {Path(temp_dir) / 'joint_nand'}\n\n" if self._split_nand_context else "") +
-                         f"Flash these files to your Switch using appropriate tools.")
+            if self._split_nand_context and self._split_nand_context['format'] == 'emummc_sd':
+                self._dialog("Level 1 Complete",
+                             f"Level 1 process completed successfully!\n\n"
+                             f"Fixed emuMMC files are ready at:\n{self._split_output_dir}\n\n"
+                             f"Copy all files from this folder back to the original emuMMC SD Files folder and replace the existing files.")
+            else:
+                self._dialog("Level 1 Complete",
+                             f"Level 1 process completed successfully!\n\n" +
+                             f"Updated NAND: {nand_source}\n" +
+                             f"BOOT0: {boot0_output}\n" +
+                             f"BOOT1: {boot1_output}\n\n" +
+                             (f"Re-split output: {Path(temp_dir) / 'joint_nand'}\n\n" if self._split_nand_context else "") +
+                             f"Flash these files to your Switch using appropriate tools.")
 
         else:
             # Online mode - flash back to physical eMMC
@@ -5270,14 +5282,20 @@ class SwitchGuiApp(tk.Tk):
             # If source was split NAND, re-split the fixed output
             self._resplit_if_needed(nand_source, boot0_output, boot1_output, temp_dir)
 
-            self._dialog("Level 2 Complete",
-                         f"Level 2 rebuild completed successfully!\n\n" +
-                         f"Rebuilt NAND: {nand_source}\n" +
-                         f"BOOT0: {boot0_output}\n" +
-                         f"BOOT1: {boot1_output}\n\n" +
-                         (f"Re-split output: {Path(temp_dir) / 'joint_nand'}\n\n" if self._split_nand_context else "") +
-                         f"Your NAND file has been completely rebuilt.\n" +
-                         f"Flash these files to your Switch using appropriate tools.")
+            if self._split_nand_context and self._split_nand_context['format'] == 'emummc_sd':
+                self._dialog("Level 2 Complete",
+                             f"Level 2 rebuild completed successfully!\n\n"
+                             f"Rebuilt emuMMC files are ready at:\n{self._split_output_dir}\n\n"
+                             f"Copy all files from this folder back to the original emuMMC SD Files folder and replace the existing files.")
+            else:
+                self._dialog("Level 2 Complete",
+                             f"Level 2 rebuild completed successfully!\n\n" +
+                             f"Rebuilt NAND: {nand_source}\n" +
+                             f"BOOT0: {boot0_output}\n" +
+                             f"BOOT1: {boot1_output}\n\n" +
+                             (f"Re-split output: {Path(temp_dir) / 'joint_nand'}\n\n" if self._split_nand_context else "") +
+                             f"Your NAND file has been completely rebuilt.\n" +
+                             f"Flash these files to your Switch using appropriate tools.")
 
         else:
             # Online mode - flash to physical eMMC
