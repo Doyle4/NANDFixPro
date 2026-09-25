@@ -1,7 +1,7 @@
 # NAND Fix Pro
 
 
-[![Version](https://img.shields.io/badge/version-2.3-blue.svg)](https://github.com/sthetix/NANDFixPro/releases)
+[![Version](https://img.shields.io/badge/version-2.4-blue.svg)](https://github.com/sthetix/NANDFixPro/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4.svg)](https://www.microsoft.com/windows/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 

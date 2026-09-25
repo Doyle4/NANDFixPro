@@ -107,61 +107,57 @@ def detect_split_nand(selected_path):
     """
     p = Path(selected_path)
     parent = p.parent
-    name = p.name
+    name = p.name.lower()
+    if name == "rawnand.bin":
+        return None
 
-    # --- Format 1: emuMMC SD files (00, 01, 02...) ---
-    if name == "00" or (name.isdigit() and len(name) == 2 and int(name) == 0):
-        parts = []
-        i = 0
-        while True:
-            part_name = f"{i:02d}" if i < 10 else str(i)
-            part_file = parent / part_name
-            if part_file.is_file():
-                parts.append(part_file)
-                i += 1
-            else:
-                break
-        if len(parts) >= 2:
-            chunk_size = parts[0].stat().st_size
-            total_size = sum(pf.stat().st_size for pf in parts)
-            return {
-                'format': 'emummc_sd',
-                'source_dir': parent,
-                'files': parts,
-                'chunk_size': chunk_size,
-                'num_parts': len(parts),
-                'total_size': total_size,
-                'has_boot0': (parent / "BOOT0").is_file(),
-                'has_boot1': (parent / "BOOT1").is_file(),
-            }
+    if re.fullmatch(r"\d{2,}", name):
+        fmt = 'emummc_sd'
+        part_name = lambda i: f"{i:02d}"
+        part_pattern = re.compile(r"\d{2,}")
+    elif re.fullmatch(r"rawnand\.bin\.\d{2,}", name):
+        fmt = 'hekate_split'
+        part_name = lambda i: f"rawnand.bin.{i:02d}"
+        part_pattern = re.compile(r"rawnand\.bin\.\d{2,}")
+    else:
+        raise ValueError("Select RAWNAND.bin, a rawnand.bin.NN backup part, or an NN emuMMC part.")
 
-    # --- Format 2: Hekate split backup (rawnand.bin.00, rawnand.bin.01...) ---
-    if name == "rawnand.bin.00" or (name.startswith("rawnand.bin.") and name.endswith("00")):
-        parts = []
-        i = 0
-        while True:
-            part_name = f"rawnand.bin.{i:02d}"
-            part_file = parent / part_name
-            if part_file.is_file():
-                parts.append(part_file)
-                i += 1
-            else:
-                break
-        if len(parts) >= 2:
-            chunk_size = parts[0].stat().st_size
-            total_size = sum(pf.stat().st_size for pf in parts)
-            return {
-                'format': 'hekate_split',
-                'source_dir': parent,
-                'files': parts,
-                'chunk_size': chunk_size,
-                'num_parts': len(parts),
-                'total_size': total_size,
-                'has_boot0': (parent / "BOOT0").is_file(),
-                'has_boot1': (parent / "BOOT1").is_file(),
-            }
+    part_indices = {int(child.name.split('.')[-1]) for child in parent.iterdir()
+                    if child.is_file() and part_pattern.fullmatch(child.name.lower())}
+    if not part_indices or part_indices != set(range(max(part_indices) + 1)) or len(part_indices) < 2:
+        raise ValueError("Split NAND parts are missing or incomplete.")
 
-    return None
+    parts = [parent / part_name(i) for i in range(len(part_indices))]
+    if not all(part.is_file() for part in parts) or p not in parts:
+        raise ValueError("Select a part from a complete split NAND set.")
+    sizes = [part.stat().st_size for part in parts]
+    if (sizes[0] == 0 or sizes[0] > 0xFFFFFFFF or
+            any(size != sizes[0] for size in sizes[:-1]) or not 0 < sizes[-1] <= sizes[0]):
+        raise ValueError("Split NAND part sizes are inconsistent.")
+    total_size = sum(sizes)
+    with open(parts[0], 'rb') as first_part:
+        first_part.seek(512)
+        gpt_header = first_part.read(512)
+    if len(gpt_header) != 512 or gpt_header[:8] != b'EFI PART':
+        raise ValueError("The first NAND part has no valid GPT header.")
+    last_lba = int.from_bytes(gpt_header[32:40], 'little')
+    if int.from_bytes(gpt_header[24:32], 'little') != 1 or last_lba < 2:
+        raise ValueError("The first NAND part has an invalid GPT size.")
+    if total_size != (last_lba + 1) * 512:
+        raise ValueError("Split NAND is incomplete: total part size does not match its GPT.")
+    if fmt == 'emummc_sd' and not all((parent / boot).is_file() for boot in ('BOOT0', 'BOOT1')):
+        raise ValueError("emuMMC SD Files requires BOOT0 and BOOT1 beside the numbered parts.")
+
+    return {
+        'format': fmt,
+        'source_dir': parent,
+        'files': parts,
+        'chunk_size': sizes[0],
+        'num_parts': len(parts),
+        'total_size': total_size,
+        'has_boot0': (parent / "BOOT0").is_file(),
+        'has_boot1': (parent / "BOOT1").is_file(),
+    }
 
 
 sys.excepthook = log_uncaught_exceptions
@@ -1433,7 +1429,7 @@ class SwitchGuiApp(tk.Tk):
         super().__init__()
         set_window_icon(self)
         set_app_user_model_id('com.nandfixpro.app')
-        self.version = "2.3"
+        self.version = "2.4"
         self.title(f"NAND Fix Pro v{self.version}")
         self.geometry("860x840")
         self.minsize(760, 680)
@@ -1498,6 +1494,8 @@ class SwitchGuiApp(tk.Tk):
         self._split_nand_context = None
         self._joined_nand_path = None
         self._split_output_dir = None
+        self._owned_temp_dirs = {}
+        self._active_temp_dirs = set()
 
         # Console type override variables
         self.override_console_type = tk.BooleanVar(value=False)
@@ -2824,27 +2822,11 @@ class SwitchGuiApp(tk.Tk):
         else:
             self._log("INFO: Offline mode - keeping user's donor PRODINFO file")
 
-        # Delete all switch_gui_* temp folders
-        if self.paths['temp_directory'].get():
-            temp_base = self.paths['temp_directory'].get()
-            try:
-                import shutil
-                import glob
-                # Find all switch_gui_* folders in the temp directory
-                temp_folders = glob.glob(os.path.join(temp_base, "switch_gui_*"))
-                deleted_count = 0
-                for folder in temp_folders:
-                    try:
-                        if os.path.isdir(folder):
-                            shutil.rmtree(folder)
-                            deleted_count += 1
-                    except Exception as e:
-                        self._log(f"WARNING: Could not delete temp folder {folder}: {e}")
-
-                if deleted_count > 0:
-                    deleted_items.append(f"{deleted_count} temp folder(s)")
-            except Exception as e:
-                self._log(f"WARNING: Error during temp folder cleanup: {e}")
+        # Remove only work folders created during this session.
+        deleted_count = sum(self._cleanup_process_temp(folder) for folder in list(self._owned_temp_dirs)
+                            if folder not in self._active_temp_dirs)
+        if deleted_count:
+            deleted_items.append(f"{deleted_count} temp folder(s)")
 
         if deleted_items:
             self._log(f"INFO: Deleted {', '.join(deleted_items)}")
@@ -3015,7 +2997,7 @@ class SwitchGuiApp(tk.Tk):
             info_text = ("OFFLINE MODE: Fixes a corrupt SYSTEM partition in a NAND file(s).\n\n"
                          "• Use this for software errors, failed updates, or boot issues.\n"
                          "• The process reads PRODINFO and SYSTEM from your NAND backup.\n"
-                         "• The selected NAND file is updated in place; BOOT0/BOOT1 are saved beside it.")
+                         "• Output follows the source format; NAND backups use 2 GiB parts.")
             paths = [
                 ("rawnand", "NAND File(s):", "file"),
                 ("keys", "prod.keys File:", "file"),
@@ -3078,7 +3060,7 @@ class SwitchGuiApp(tk.Tk):
             info_text = ("OFFLINE MODE: Rebuilds NAND using clean donor partitions in a NAND file(s).\n\n"
                          "• Use this when multiple partitions are corrupt in your backup.\n"
                          "• The process reads PRODINFO from your NAND backup, then flashes clean partitions.\n"
-                         "• The selected NAND file is rebuilt in place. ALL USER DATA IS ERASED.")
+                         "• Output follows the source format. ALL USER DATA IS ERASED.")
             paths = [
                 ("rawnand", "NAND File(s):", "file"),
                 ("keys", "prod.keys File:", "file"),
@@ -3146,7 +3128,7 @@ class SwitchGuiApp(tk.Tk):
             info_text = ("OFFLINE MODE: Complete NAND reconstruction from scratch.\n\n"
                          "• Reconstructs a complete NAND image from a PRODINFO and clean templates.\n"
                          "• Automatically detects NAND size (32/64GB) from PRODINFO.\n"
-                         "• Output: RAWNAND.bin + BOOT0.bin + BOOT1.bin")
+                         "• Output: 2 GiB RAWNAND parts + BOOT0 + BOOT1")
             paths = [
                 ("keys", "prod.keys File:", "file"),
                 ("firmware", "Firmware Folder:", "folder"),
@@ -3483,6 +3465,10 @@ class SwitchGuiApp(tk.Tk):
 
     def _copy_boot_files_to_sd(self):
         """Copy BOOT0 and BOOT1 files to the SD card and clean up the temp folder."""
+        if self.offline_mode.get():
+            CustomDialog(self, title="Offline Output",
+                         message="BOOT0 and BOOT1 are already saved beside the offline NAND output.")
+            return
         try:
             # --- FIX: Check for the specific output directory ---
             if not self.last_output_dir or not Path(self.last_output_dir).exists():
@@ -3536,8 +3522,7 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"SUCCESS: BOOT files copied to {restore_path}")
 
             # --- FIX: Clean up the entire temporary directory ---
-            if safe_remove_directory(output_path):
-                self._log(f"INFO: Cleaned up temporary directory: {output_path}")
+            self._cleanup_process_temp(output_path)
             self.last_output_dir = None # Reset the path after cleanup
 
             # Delete prod.keys and PRODINFO files after successful completion (only in online mode)
@@ -3687,6 +3672,21 @@ class SwitchGuiApp(tk.Tk):
         self._log(f"--- SUCCESS: Donor NAND extracted to {donor_nand_path}")
         return donor_nand_path      
     
+    def _cleanup_process_temp(self, folder):
+        folder = Path(folder).resolve()
+        base = self._owned_temp_dirs.get(folder)
+        if base is None or folder.parent != base or not folder.name.startswith("switch_gui_"):
+            return False
+        try:
+            if folder.exists():
+                shutil.rmtree(folder)
+            self._owned_temp_dirs.pop(folder, None)
+            self._log(f"INFO: Cleaned up process temp directory: {folder}")
+            return True
+        except Exception as e:
+            self._log(f"WARNING: Could not clean up process temp directory {folder}: {e}")
+            return False
+
     def _start_level3_threaded(self):
         self.progress_value.set(0)
         self.status_text.set("Starting Level 3 process")
@@ -3820,10 +3820,8 @@ class SwitchGuiApp(tk.Tk):
                     pass  # Silent cleanup
 
             # Clean up the last temp directory if it exists
-            if hasattr(self, 'last_output_dir') and self.last_output_dir and os.path.exists(self.last_output_dir):
-                self._log(f"\nINFO: Cleaning up temporary directory on exit: {self.last_output_dir}")
-                shutil.rmtree(self.last_output_dir)
-                self._log("INFO: Cleanup complete.")
+            if hasattr(self, 'last_output_dir') and self.last_output_dir:
+                self._cleanup_process_temp(self.last_output_dir)
         except Exception as e:
             # Don't block closing if cleanup fails
             print(f"Warning: Could not clean up temp directory on exit: {e}")
@@ -3840,33 +3838,41 @@ class SwitchGuiApp(tk.Tk):
                 temp_base = self.paths['temp_directory'].get()
                 temp_dir_name = f"switch_gui_level3_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 temp_dir = os.path.join(temp_base, temp_dir_name)
-                os.makedirs(temp_dir, exist_ok=True)
+                os.makedirs(temp_dir)
+                work_folder = Path(temp_dir).resolve()
+                self._owned_temp_dirs[work_folder] = work_folder.parent
+                self._active_temp_dirs.add(work_folder)
                 self._log(f"INFO: Using custom temporary directory at: {temp_dir}")
             else:
                 # CHANGED: Don't use context manager - create temp dir manually
                 temp_dir_name = f"switch_gui_level3_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 temp_dir = os.path.join(tempfile.gettempdir(), temp_dir_name)
-                os.makedirs(temp_dir, exist_ok=True)
+                os.makedirs(temp_dir)
+                work_folder = Path(temp_dir).resolve()
+                self._owned_temp_dirs[work_folder] = work_folder.parent
+                self._active_temp_dirs.add(work_folder)
                 self._log(f"INFO: Created temporary directory at: {temp_dir}")
 
             # Run the process
-            self._run_level3_process(temp_dir)
+            if not self._run_level3_process(temp_dir):
+                self._log(f"INFO: Process files retained for inspection at: {temp_dir}")
+                return
 
-            self.last_output_dir = temp_dir
-            self._log(f"INFO: BOOT files saved to: {temp_dir}")
-            self._log(f"INFO: Temp directory will be cleaned after copying BOOT files to SD.")
+            if not self.offline_mode.get():
+                self.last_output_dir = temp_dir
+                self._log(f"INFO: BOOT files saved to: {temp_dir}")
+                self._log(f"INFO: Temp directory will be cleaned after copying BOOT files to SD.")
+            else:
+                self._cleanup_process_temp(temp_dir)
 
         except Exception as e:
             self._log(f"An unexpected critical error occurred: {e}\n{traceback.format_exc()}")
             self._log(f"\nINFO: Level 3 process finished with an error.")
-            # Clean up temp directory if process failed
-            if temp_dir and os.path.exists(temp_dir):
-                try:
-                    shutil.rmtree(temp_dir)
-                    self._log(f"INFO: Cleaned up temporary directory after error: {temp_dir}")
-                except Exception as cleanup_error:
-                    self._log(f"WARNING: Could not clean up temp directory: {cleanup_error}")
+            if temp_dir:
+                self._log(f"INFO: Process files retained for inspection at: {temp_dir}")
         finally:
+            if temp_dir:
+                self._active_temp_dirs.discard(Path(temp_dir).resolve())
             self._re_enable_buttons()
 
     def _run_level3_process(self, temp_dir):
@@ -4134,12 +4140,11 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"\n[STEP 7/8] Saving complete NAND image...")
 
             output_folder = Path(self.paths['output_l3'].get())
-            final_output = output_folder / "RAWNAND.bin"
-
-            self._log(f"--- Copying complete NAND image to {final_output}...")
-            if not self._copy_with_progress(working_nand, final_output, "Saving NAND image"):
+            split_context = {'format': 'hekate_split', 'chunk_size': 2 * 1024 ** 3}
+            self._log(f"--- Saving 2 GiB NAND parts to {output_folder}...")
+            if not self._split_nand_output(working_nand, output_folder, split_context):
                 return
-            self._log(f"SUCCESS: Complete NAND image saved to {final_output}")
+            self._log(f"SUCCESS: NAND parts saved to {output_folder}")
 
             # Also save BOOT0 and BOOT1 to the same location
             self._log(f"\n[STEP 8/8] Saving BOOT0 & BOOT1 files...")
@@ -4151,7 +4156,7 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"SUCCESS: BOOT1 saved to {boot1_output}")
 
             self._log("\n--- LEVEL 3 OFFLINE RECOVERY COMPLETE ---")
-            self._log(f"IMPORTANT: Complete NAND image created at: {final_output}")
+            self._log(f"IMPORTANT: Split NAND created at: {output_folder}")
             self._log(f"BOOT files saved to: {output_folder}")
             self._log("Flash these files to your Switch using appropriate tools.")
 
@@ -4160,7 +4165,7 @@ class SwitchGuiApp(tk.Tk):
 
             self._dialog("Level 3 Complete",
                          f"Level 3 offline recovery completed successfully!\n\n" +
-                         f"Complete NAND: {final_output}\n" +
+                         f"Split NAND (2 GiB parts): {output_folder}\n" +
                          f"BOOT0: {boot0_output}\n" +
                          f"BOOT1: {boot1_output}\n\n" +
                          "Flash these files to your Switch using appropriate tools.")
@@ -4194,6 +4199,7 @@ class SwitchGuiApp(tk.Tk):
                          "Level 3 recovery completed successfully!\n\n" +
                          "Don't forget to flash BOOT0 and BOOT1 using Hekate.\n\n" +
                          "Your Switch should now boot normally.")
+        return True
     
     def _raw_copy_nand_to_emmc(self, source_nand, target_drive):
         """Raw copy donor NAND image to target eMMC using optimized partial write of 4GB."""
@@ -4470,7 +4476,16 @@ class SwitchGuiApp(tk.Tk):
 
             # Check if user selected a split NAND part (offline mode only)
             if key == "rawnand":
-                split_info = detect_split_nand(path)
+                try:
+                    split_info = detect_split_nand(path)
+                except ValueError as e:
+                    self.paths[key].set("")
+                    self._split_nand_context = None
+                    self._joined_nand_path = None
+                    self._save_config()
+                    self._validate_paths_and_update_buttons()
+                    self._dialog("Invalid NAND Source", str(e))
+                    return
                 if split_info:
                     fmt_name = "emuMMC SD Files" if split_info['format'] == 'emummc_sd' else "Hekate Split Backup"
                     num = split_info['num_parts']
@@ -4495,7 +4510,7 @@ class SwitchGuiApp(tk.Tk):
                         f"NANDFixPro will:\n"
                         f"  1. Read & join all parts from source into temp\n"
                         f"  2. Run Level 1 / 2 as normal\n"
-                        f"  3. Re-split the fixed NAND into a joint_nand subfolder\n\n"
+                        f"  3. Save the fixed NAND in the same source format\n\n"
                         f"Continue with this split NAND source?"
                     )
                     dialog = CustomDialog(self, title="Split NAND Detected", message=msg, buttons="yesno")
@@ -4615,40 +4630,48 @@ class SwitchGuiApp(tk.Tk):
                 temp_base = self.paths['temp_directory'].get()
                 temp_dir_name = f"switch_gui_{level.lower().replace(' ', '')}{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 temp_dir = os.path.join(temp_base, temp_dir_name)
-                os.makedirs(temp_dir, exist_ok=True)
+                os.makedirs(temp_dir)
+                work_folder = Path(temp_dir).resolve()
+                self._owned_temp_dirs[work_folder] = work_folder.parent
+                self._active_temp_dirs.add(work_folder)
                 self._log(f"INFO: Using custom temporary directory at: {temp_dir}")
             else:
                 # CHANGED: Don't use context manager - create temp dir manually
                 temp_dir_name = f"switch_gui_{level.lower().replace(' ', '')}{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 temp_dir = os.path.join(tempfile.gettempdir(), temp_dir_name)
-                os.makedirs(temp_dir, exist_ok=True)
+                os.makedirs(temp_dir)
+                work_folder = Path(temp_dir).resolve()
+                self._owned_temp_dirs[work_folder] = work_folder.parent
+                self._active_temp_dirs.add(work_folder)
                 self._log(f"INFO: Created temporary directory at: {temp_dir}")
 
             # Run the process
             if level == "Level 1":
-                self._run_level1_process(temp_dir)
+                completed = self._run_level1_process(temp_dir)
             elif level == "Level 2":
-                self._run_level2_process(temp_dir)
+                completed = self._run_level2_process(temp_dir)
+            else:
+                return
+            if not completed:
+                self._log(f"INFO: Process files retained for inspection at: {temp_dir}")
+                return
 
-            # --- THIS IS THE FIX ---
             # Save the successful output path for the copy button to use
-            self.last_output_dir = temp_dir
-
-            if not self._split_nand_context:
+            if not self.offline_mode.get():
+                self.last_output_dir = temp_dir
                 self._log(f"INFO: BOOT files saved to: {temp_dir}")
                 self._log(f"INFO: Temp directory will be cleaned after copying BOOT files to SD.")
+            else:
+                self._cleanup_process_temp(temp_dir)
 
         except Exception as e:
             self._log(f"An unexpected critical error occurred: {e}\n{traceback.format_exc()}")
             self._log(f"\nINFO: {level} process finished with an error.")
-            # Clean up temp directory if process failed
-            if temp_dir and os.path.exists(temp_dir):
-                try:
-                    shutil.rmtree(temp_dir)
-                    self._log(f"INFO: Cleaned up temporary directory after error: {temp_dir}")
-                except Exception as cleanup_error:
-                    self._log(f"WARNING: Could not clean up temp directory: {cleanup_error}")
+            if temp_dir:
+                self._log(f"INFO: Process files retained for inspection at: {temp_dir}")
         finally:
+            if temp_dir:
+                self._active_temp_dirs.discard(Path(temp_dir).resolve())
             self._re_enable_buttons()
 
     def _selective_copy_system_contents_level1(self, source_system_path, drive_letter):
@@ -4726,10 +4749,16 @@ class SwitchGuiApp(tk.Tk):
         CHUNK = 64 * 1024 * 1024  # 64 MB buffer
         total_size = Path(input_path).stat().st_size
         output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
         bytes_read = 0
         part_idx = 0
         try:
+            if output_dir.exists() and any(
+                child.is_file() and (child.name.isdigit() if fmt == 'emummc_sd'
+                                     else re.fullmatch(r"rawnand\.bin\.\d{2,}", child.name.lower()))
+                for child in output_dir.iterdir()
+            ):
+                raise FileExistsError(f"NAND parts already exist in {output_dir}; select an empty output folder.")
+            output_dir.mkdir(parents=True, exist_ok=True)
             with open(input_path, 'rb') as in_f:
                 while True:
                     part_name = f"{part_idx:02d}" if (fmt == 'emummc_sd' and part_idx < 10) else (
@@ -4763,10 +4792,9 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"ERROR: Failed to re-split NAND: {e}")
             return False
 
-    def _prepare_joined_nand(self):
+    def _prepare_joined_nand(self, temp_dir):
         """Join split NAND parts into temp dir. Returns (joined_path, 'file') or (None, None)."""
         context = self._split_nand_context
-        temp_dir = self.paths['temp_directory'].get()
         if not temp_dir or not Path(temp_dir).exists():
             self._log("ERROR: Temp directory not set or not found.")
             self._dialog("Error", "Please set a valid temp directory in Settings.")
@@ -4795,20 +4823,20 @@ class SwitchGuiApp(tk.Tk):
 
     def _resplit_if_needed(self, fixed_nand_path, boot0_src, boot1_src, temp_dir):
         """
-        If a split NAND context is active, re-split the fixed NAND and write BOOT files
-        into a joint_nand subfolder inside temp_dir. Cleans up the joined source file.
+        Split the fixed NAND in its source format and write BOOT files alongside it.
+        Clean up a joined source file after the output is ready.
         """
-        if not self._split_nand_context:
-            return
-        context = self._split_nand_context
-        if context['format'] == 'emummc_sd':
+        context = self._split_nand_context or {'format': 'hekate_split'}
+        if context['format'] != 'emummc_sd':
+            context = {**context, 'chunk_size': 2 * 1024 ** 3}
+        if self._split_nand_context:
             output_dir = Path(temp_dir).parent / f"nandfixpro_output_{Path(temp_dir).name}"
         else:
-            output_dir = Path(temp_dir) / "joint_nand"
+            output_dir = Path(fixed_nand_path).parent / "nandfixpro_output"
         self._split_output_dir = output_dir
         self._log(f"\n[POST-STEP] Re-splitting fixed NAND into {output_dir} ...")
         if not self._split_nand_output(fixed_nand_path, str(output_dir), context):
-            return
+            return False
 
         # Copy BOOT0 / BOOT1 into the output folder
         if boot0_src and Path(boot0_src).exists():
@@ -4825,9 +4853,11 @@ class SwitchGuiApp(tk.Tk):
             self._joined_nand_path = None
 
         self._log(f"\nSplit NAND output ready at: {output_dir}")
-        self._log("Copy the contents of that folder back to your SD card emuMMC directory.")
+        if context['format'] == 'emummc_sd':
+            self._log("Copy the contents of that folder back to your SD card emuMMC directory.")
+        return True
 
-    def _get_nand_source(self):
+    def _get_nand_source(self, temp_dir):
         """
         Get the NAND source for processing based on offline mode.
         Returns: (source_path, source_type) where source_type is 'file' or 'device'
@@ -4839,9 +4869,17 @@ class SwitchGuiApp(tk.Tk):
                 self._dialog("Error", "Please select a valid RAWNAND.bin file in Settings.")
                 return None, None
 
+            try:
+                split_info = detect_split_nand(rawnand_path)
+            except ValueError as e:
+                self._log(f"ERROR: Invalid NAND source: {e}")
+                self._dialog("Invalid NAND Source", str(e))
+                return None, None
+            self._split_nand_context = split_info
+
             # If split NAND was selected, join the parts first into temp
-            if self._split_nand_context is not None:
-                return self._prepare_joined_nand()
+            if split_info is not None:
+                return self._prepare_joined_nand(temp_dir)
 
             self._log(f"INFO: Using offline mode with RAWNAND.bin: {rawnand_path}")
             return rawnand_path, 'file'
@@ -4895,7 +4933,7 @@ class SwitchGuiApp(tk.Tk):
         else:
             self._log("\n[STEP 1/8] Using NAND file(s) from settings...")
         
-        nand_source, source_type = self._get_nand_source()
+        nand_source, source_type = self._get_nand_source(temp_dir)
         if not nand_source:
             return
 
@@ -5019,12 +5057,11 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"SUCCESS: BOOT0 saved to {boot0_output}")
             self._log(f"SUCCESS: BOOT1 saved to {boot1_output}")
 
+            # Keep the source format when splitting the fixed output.
+            if not self._resplit_if_needed(nand_source, boot0_output, boot1_output, temp_dir):
+                return
             self._log("\n--- Level 1 Offline System Restore completed successfully! ---")
-            self._log(f"IMPORTANT: Your NAND file has been updated at: {nand_source}")
-            self._log(f"BOOT files saved to: {rawnand_folder}")
-
-            # If source was split NAND, re-split the fixed output
-            self._resplit_if_needed(nand_source, boot0_output, boot1_output, temp_dir)
+            self._log(f"IMPORTANT: Split NAND ready at: {self._split_output_dir}")
 
             if self._split_nand_context and self._split_nand_context['format'] == 'emummc_sd':
                 self._dialog("Level 1 Complete",
@@ -5034,10 +5071,8 @@ class SwitchGuiApp(tk.Tk):
             else:
                 self._dialog("Level 1 Complete",
                              f"Level 1 process completed successfully!\n\n" +
-                             f"Updated NAND: {nand_source}\n" +
-                             f"BOOT0: {boot0_output}\n" +
-                             f"BOOT1: {boot1_output}\n\n" +
-                             (f"Re-split output: {Path(temp_dir) / 'joint_nand'}\n\n" if self._split_nand_context else "") +
+                             f"Split NAND backup (2 GiB parts): {self._split_output_dir}\n" +
+                             f"BOOT0/BOOT1: {self._split_output_dir}\n\n" +
                              f"Flash these files to your Switch using appropriate tools.")
 
         else:
@@ -5077,6 +5112,7 @@ class SwitchGuiApp(tk.Tk):
         self.button_states["copy_boot"] = "active"
         self._validate_paths_and_update_buttons()
         self._update_button_colors()
+        return True
 
     def _run_and_interrupt_flash(self, command, partition_name, target_mb):
         self._log(f"--- Starting partial flash for {partition_name} with a {target_mb}MB target...")
@@ -5114,7 +5150,7 @@ class SwitchGuiApp(tk.Tk):
         else:
             self._log("\n[STEP 1/7] Using NAND file(s) from settings...")
 
-        nand_source, source_type = self._get_nand_source()
+        nand_source, source_type = self._get_nand_source(temp_dir)
         if not nand_source:
             return
 
@@ -5275,12 +5311,11 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"SUCCESS: BOOT0 saved to {boot0_output}")
             self._log(f"SUCCESS: BOOT1 saved to {boot1_output}")
 
+            # Keep the source format when splitting the rebuilt output.
+            if not self._resplit_if_needed(nand_source, boot0_output, boot1_output, temp_dir):
+                return
             self._log("\n--- LEVEL 2 OFFLINE REBUILD COMPLETE ---")
-            self._log(f"IMPORTANT: Your NAND file has been rebuilt at: {nand_source}")
-            self._log(f"BOOT files saved to: {rawnand_folder}")
-
-            # If source was split NAND, re-split the fixed output
-            self._resplit_if_needed(nand_source, boot0_output, boot1_output, temp_dir)
+            self._log(f"IMPORTANT: Split NAND ready at: {self._split_output_dir}")
 
             if self._split_nand_context and self._split_nand_context['format'] == 'emummc_sd':
                 self._dialog("Level 2 Complete",
@@ -5290,10 +5325,8 @@ class SwitchGuiApp(tk.Tk):
             else:
                 self._dialog("Level 2 Complete",
                              f"Level 2 rebuild completed successfully!\n\n" +
-                             f"Rebuilt NAND: {nand_source}\n" +
-                             f"BOOT0: {boot0_output}\n" +
-                             f"BOOT1: {boot1_output}\n\n" +
-                             (f"Re-split output: {Path(temp_dir) / 'joint_nand'}\n\n" if self._split_nand_context else "") +
+                             f"Split NAND backup (2 GiB parts): {self._split_output_dir}\n" +
+                             f"BOOT0/BOOT1: {self._split_output_dir}\n\n" +
                              f"Your NAND file has been completely rebuilt.\n" +
                              f"Flash these files to your Switch using appropriate tools.")
 
@@ -5349,6 +5382,7 @@ class SwitchGuiApp(tk.Tk):
         self.button_states["copy_boot"] = "active"
         self._validate_paths_and_update_buttons()
         self._update_button_colors()
+        return True
 
 if __name__ == "__main__":
     # Note: Admin privileges and dependencies are handled by NandFixProLauncher.exe
