@@ -1,6 +1,7 @@
 import sys
 import traceback
 import datetime
+import random
 import tkinter as tk
 import stat
 import psutil
@@ -9,7 +10,7 @@ import hashlib
 import struct
 import ctypes
 from ctypes import wintypes
-from tkinter import colorchooser
+from tkinter import colorchooser, simpledialog
 
 
 # --- ROBUST ERROR LOGGING AND EXIT ---
@@ -886,6 +887,70 @@ def set_window_icon(window):
             return
 
 # --- CUSTOM DIALOG CLASS (Modernized) ---
+class NANDReconstructionDialog(simpledialog.Dialog):
+    def body(self, master):
+        set_window_icon(self)
+        background = self.parent.style.lookup('TFrame', 'background') or "#1c1c1c"
+        self.configure(bg=background)
+        master.configure(bg=background)
+        tk.Label(master, text="NO BACKUP DOES NOT MEAN EMPTY eMMC!",
+                 fg="#ff5c5c", bg=background, font=("Segoe UI", 12, "bold"),
+                 wraplength=460, justify=tk.LEFT).pack(anchor="w", padx=12, pady=(12, 10))
+        tk.Label(master, text=(
+            "Builds NAND from scratch using original or donor PRODINFO.\n"
+            "Check and back up readable NAND data first."
+        ), fg="#eeeeee", bg=background, font=("Segoe UI", 10),
+                 wraplength=460, justify=tk.LEFT).pack(anchor="w", padx=12)
+        consequence = ("RECONSTRUCTION RESETS NAND CONTENTS.\n"
+                       "Original user data is not recovered. Back up readable data first.")
+        tk.Label(master, text=consequence, fg="#ff5c5c", bg=background,
+                 font=("Segoe UI", 10, "bold"), wraplength=460,
+                 justify=tk.LEFT).pack(anchor="w", padx=12, pady=10)
+        self.key_sequence = ["Up", "Up", "Down", "Down", "Left", "Left", "Right", "Right", "a", "b", "x", "y"]
+        random.shuffle(self.key_sequence)
+        symbols = {"Up": "↑", "Down": "↓", "Left": "←", "Right": "→"}
+        sequence_text = " ".join(symbols.get(key, key.upper()) for key in self.key_sequence)
+        tk.Label(master, text="Press this sequence using arrow keys and A/B/X/Y:", fg="#eeeeee", bg=background,
+                 font=("Segoe UI", 10), wraplength=460, justify=tk.LEFT).pack(anchor="w", padx=12, pady=(0, 5))
+        tk.Label(master, text=sequence_text, fg="#ffffff", bg=background,
+                 font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=12, pady=(0, 8))
+        self.sequence_position = 0
+        self.sequence_status = tk.StringVar(value=f"Progress: 0 / {len(self.key_sequence)}")
+        tk.Label(master, textvariable=self.sequence_status, fg="#ff5c5c", bg=background,
+                 font=("Segoe UI", 10)).pack(anchor="w", padx=12, pady=(0, 8))
+        return None
+
+    def buttonbox(self):
+        box = ttk.Frame(self, padding="12")
+        box.pack(fill=tk.X)
+        self.continue_button = ttk.Button(box, text="Continue", command=self.ok, state="disabled")
+        self.continue_button.pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(box, text="Cancel", command=self.cancel).pack(side=tk.RIGHT)
+        self.bind("<KeyPress>", self._on_sequence_key)
+
+    def _on_sequence_key(self, event):
+        if event.keysym == "Escape":
+            self.cancel()
+            return "break"
+        key = event.keysym.lower() if event.keysym.lower() in ("a", "b", "x", "y") else event.keysym
+        if key == self.key_sequence[self.sequence_position]:
+            self.sequence_position += 1
+            self.sequence_status.set(f"Progress: {self.sequence_position} / {len(self.key_sequence)}")
+            if self.validate():
+                self.continue_button.configure(state="normal")
+                self.ok()
+        else:
+            self.sequence_position = 0
+            self.sequence_status.set(f"Wrong key. Start again: 0 / {len(self.key_sequence)}")
+        return "break"
+
+    def validate(self):
+        return self.sequence_position == len(self.key_sequence)
+
+    def apply(self):
+        self.result = True
+
+
 class CustomDialog(tk.Toplevel):
     def __init__(self, parent, title=None, message="", buttons="ok"):
         super().__init__(parent)
@@ -1429,7 +1494,7 @@ class SwitchGuiApp(tk.Tk):
         super().__init__()
         set_window_icon(self)
         set_app_user_model_id('com.nandfixpro.app')
-        self.version = "2.4"
+        self.version = "2.5"
         self.title(f"NAND Fix Pro v{self.version}")
         self.geometry("860x840")
         self.minsize(760, 680)
@@ -1450,6 +1515,7 @@ class SwitchGuiApp(tk.Tk):
         
         # Offline mode toggle
         self.offline_mode = tk.BooleanVar(value=False)
+        self.nand_reconstruction_unlocked = False
         self.guided_mode_seen = False
         self.guided_mode_active = False
         self.guided_callout = None
@@ -2276,9 +2342,9 @@ class SwitchGuiApp(tk.Tk):
         self.tab_level3 = ttk.Frame(self.tab_control, padding="15")
         
         # Add tabs to notebook
-        self.tab_control.add(self.tab_level1, text='Level 1: System Restore')
-        self.tab_control.add(self.tab_level2, text='Level 2: Full Rebuild')
-        self.tab_control.add(self.tab_level3, text='Level 3: Complete Recovery')
+        self.tab_control.add(self.tab_level1, text='System Repair')
+        self.tab_control.add(self.tab_level2, text='Clean Install')
+        self.tab_control.add(self.tab_level3, text='NAND Reconstruction')
         self.tab_control.bind("<<NotebookTabChanged>>", self._on_level_tab_changed)
         
         # Pack the notebook
@@ -2537,7 +2603,7 @@ class SwitchGuiApp(tk.Tk):
             "prodinfo": "PRODINFO",
             "rawnand": "RAWNAND file",
             "partitions_folder": "NAND archive folder",
-            "output_l3": "Level 3 output folder",
+            "output_l3": "NAND Reconstruction output folder",
             "7z": "7-Zip",
             "emmchaccgen": "EmmcHaccGen",
             "nxnandmanager": "NxNandManager",
@@ -2557,6 +2623,10 @@ class SwitchGuiApp(tk.Tk):
                     )
 
         selected_level = self._get_selected_level()
+        selected_name = self.tab_control.tab(self.tab_control.select(), "text")
+        if selected_level == 3 and not self.nand_reconstruction_unlocked:
+            return (self.tab_control, "NAND Reconstruction: Locked",
+                    "Read the last-resort warning and click Review and Unlock NAND Reconstruction before preparing files.")
         requirements = self.level_requirements_offline if self.offline_mode.get() else self.level_requirements
         missing = [
             self._get_guided_path_label(key)
@@ -2566,13 +2636,13 @@ class SwitchGuiApp(tk.Tk):
         if missing:
             step_number = 1 if self.offline_mode.get() else 2
             next_action = (
-                "Add these paths, then click the Start button for this level."
+                "Add these paths, then click the Start button for this mode."
                 if self.offline_mode.get()
-                else "Add these paths, then dismount the SD card in Hekate USB Tools and mount eMMC RAW GPP or emuMMC RAW GPP before starting this level."
+                else "Add these paths, then dismount the SD card in Hekate USB Tools and mount eMMC RAW GPP or emuMMC RAW GPP before starting this mode."
             )
             return (
                 self.tab_control,
-                f"Step {step_number}: Prepare Level {selected_level}",
+                f"Step {step_number}: Prepare {selected_name}",
                 "Missing: " + ", ".join(missing) + ". " + next_action
             )
 
@@ -2582,11 +2652,11 @@ class SwitchGuiApp(tk.Tk):
             start_message = (
                 "All required files are ready. Click Start to update or create the selected offline NAND output."
                 if self.offline_mode.get()
-                else "All required files are ready. Dismount the SD card in Hekate USB Tools, mount eMMC RAW GPP or emuMMC RAW GPP, then click Start to run this level."
+                else "All required files are ready. Dismount the SD card in Hekate USB Tools, mount eMMC RAW GPP or emuMMC RAW GPP, then click Start to run this mode."
             )
             return (
                 start_button,
-                f"Step {step_number}: Start Level {selected_level}",
+                f"Step {step_number}: Start {selected_name}",
                 start_message
             )
 
@@ -2602,7 +2672,7 @@ class SwitchGuiApp(tk.Tk):
         return (
             self.tab_control,
             "Guided Mode",
-            "Choose the repair level that matches the case. The Start button becomes active when the required files for the selected mode and level are ready."
+            "Choose the repair mode that matches the case. The Start button becomes active when the required files for the selected mode are ready."
         )
 
     def _create_guided_callout(self):
@@ -2795,6 +2865,8 @@ class SwitchGuiApp(tk.Tk):
             self._log("--- Reset cancelled by user.")
             return
 
+        self.nand_reconstruction_unlocked = False
+
         # 1. Delete temporary files/folders created by NANDFixPro
         deleted_items = []
 
@@ -2864,6 +2936,8 @@ class SwitchGuiApp(tk.Tk):
         # 7. Reset the last output directory variable
         self.last_output_dir = None
         self.last_target_drive_type = None
+
+        self._build_level3_tab()
 
         # 8. Clear the log and update the UI
         self._clear_log()
@@ -2942,11 +3016,11 @@ class SwitchGuiApp(tk.Tk):
     def _setup_tab_content(self, parent_frame, title, info_text, paths):
         parent_frame.columnconfigure(1, weight=1)
         accent_color = self.ACCENT_COLOR
-        if title.startswith("Level 1"):
+        if title.startswith("System Repair"):
             accent_color = self.LEVEL1_COLOR
-        elif title.startswith("Level 2"):
+        elif title.startswith("Clean Install"):
             accent_color = self.LEVEL2_COLOR
-        elif title.startswith("Level 3"):
+        elif title.startswith("NAND Reconstruction"):
             accent_color = self.LEVEL3_COLOR
         
         # Row 0: Description
@@ -2983,7 +3057,7 @@ class SwitchGuiApp(tk.Tk):
         self._build_level1_tab()
 
     def _build_level1_tab(self):
-        """Build/rebuild Level 1 tab based on offline mode"""
+        """Build/rebuild System Repair tab based on offline mode"""
         parent_frame = self.level1_frame
 
         # Clear existing widgets
@@ -3012,7 +3086,7 @@ class SwitchGuiApp(tk.Tk):
                 ("firmware", "Firmware Folder:", "folder"),
             ]
 
-        self._setup_tab_content(parent_frame, "Level 1: Description", info_text, paths)
+        self._setup_tab_content(parent_frame, "System Repair: Description", info_text, paths)
 
         # Row 2: Compact spacer between path fields and advanced options.
         spacer = ttk.Frame(parent_frame, height=10)
@@ -3035,8 +3109,8 @@ class SwitchGuiApp(tk.Tk):
         override_checkbox.pack(anchor="center")
 
         # Row 4: The main button area, now in a fixed position.
-        self._create_standard_button_area(parent_frame, "Level 1",
-                                          lambda: self._start_threaded_process("Level 1"),
+        self._create_standard_button_area(parent_frame, "System Repair",
+                                          lambda: self._start_threaded_process("System Repair"),
                                           "start_level1_button")
         self._update_button_colors()
 
@@ -3046,7 +3120,7 @@ class SwitchGuiApp(tk.Tk):
         self._build_level2_tab()
 
     def _build_level2_tab(self):
-        """Build/rebuild Level 2 tab based on offline mode"""
+        """Build/rebuild Clean Install tab based on offline mode"""
         parent_frame = self.level2_frame
 
         # Clear existing widgets
@@ -3075,7 +3149,7 @@ class SwitchGuiApp(tk.Tk):
                 ("firmware", "Firmware Folder:", "folder"),
             ]
 
-        self._setup_tab_content(parent_frame, "Level 2: Description", info_text, paths)
+        self._setup_tab_content(parent_frame, "Clean Install: Description", info_text, paths)
 
         # Row 2: Compact spacer between path fields and advanced options.
         spacer = ttk.Frame(parent_frame, height=10)
@@ -3103,8 +3177,8 @@ class SwitchGuiApp(tk.Tk):
         override_checkbox.pack(anchor="center", pady=(15, 0))
 
         # Row 4: The main button area (without Advanced USER button, it's in Row 3)
-        self._create_standard_button_area(parent_frame, "Level 2",
-                                          lambda: self._start_threaded_process("Level 2"),
+        self._create_standard_button_area(parent_frame, "Clean Install",
+                                          lambda: self._start_threaded_process("Clean Install"),
                                           "start_level2_button")
         self._update_button_colors()
 
@@ -3114,7 +3188,7 @@ class SwitchGuiApp(tk.Tk):
         self._build_level3_tab()
 
     def _build_level3_tab(self):
-        """Build/rebuild Level 3 tab based on offline mode"""
+        """Build/rebuild NAND Reconstruction tab based on offline mode"""
         parent_frame = self.level3_frame
 
         # Clear existing widgets
@@ -3123,10 +3197,26 @@ class SwitchGuiApp(tk.Tk):
 
         parent_frame.columnconfigure(1, weight=1)
 
+        if not self.nand_reconstruction_unlocked:
+            self.start_level3_button = None
+            warning = ttk.LabelFrame(parent_frame, text="NAND Reconstruction: Last Resort", padding="15", style="Card.TLabelframe")
+            warning.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(5, 15))
+            ttk.Label(warning, text=(
+                "NO BACKUP DOES NOT MEAN YOUR eMMC IS EMPTY.\n\n"
+                "Your eMMC may still contain recoverable NAND data and original PRODINFO. "
+                "Check and back up readable data before considering reconstruction.\n\n"
+                "This mode builds NAND from a template with original or donor PRODINFO. "
+                "It does not recover original user data or recreate lost original PRODINFO. "
+                "Use only when reconstruction is necessary; this is not a stronger repair mode."
+            ), wraplength=760, justify=tk.LEFT, style="Panel.TLabel").pack(anchor="w", fill="x")
+            ttk.Button(parent_frame, text="Review and Unlock NAND Reconstruction",
+                       command=self._unlock_nand_reconstruction).grid(row=1, column=0, columnspan=3, pady=15)
+            return
+
         # Dynamic description based on mode
         if self.offline_mode.get():
-            info_text = ("OFFLINE MODE: Complete NAND reconstruction from scratch.\n\n"
-                         "• Reconstructs a complete NAND image from a PRODINFO and clean templates.\n"
+            info_text = ("OFFLINE MODE: LAST RESORT - NAND reconstruction from a template.\n\n"
+                         "• Reconstructs a complete NAND image from an original or donor decrypted PRODINFO and clean templates.\n"
                          "• Automatically detects NAND size (32/64GB) from PRODINFO.\n"
                          "• Output: 2 GiB RAWNAND parts + BOOT0 + BOOT1")
             paths = [
@@ -3136,8 +3226,8 @@ class SwitchGuiApp(tk.Tk):
                 ("output_l3", "Output Folder:", "folder"),
             ]
         else:
-            info_text = ("ONLINE MODE: For total NAND loss, including PRODINFO. This is a last resort.\n\n"
-                         "• Reconstructs a complete NAND image from a PRODINFO file and clean templates.\n"
+            info_text = ("ONLINE MODE: LAST RESORT - NAND reconstruction from a template.\n\n"
+                         "• Reconstructs a complete NAND image from an original or donor decrypted PRODINFO and clean templates.\n"
                          "• The script automatically detects eMMC size (32/64GB) for the correct NAND skeleton.\n"
                          "• Connect your Switch in 'eMMC RAW GPP' mode (Read-Only OFF) and click Start.")
             paths = [
@@ -3145,7 +3235,7 @@ class SwitchGuiApp(tk.Tk):
                 ("prodinfo", "PRODINFO:", "file"),
             ]
 
-        self._setup_tab_content(parent_frame, "Level 3: Description", info_text, paths)
+        self._setup_tab_content(parent_frame, "NAND Reconstruction: Description", info_text, paths)
 
         # Row 2: Compact spacer above the action area.
         spacer = ttk.Frame(parent_frame, height=12)
@@ -3157,7 +3247,7 @@ class SwitchGuiApp(tk.Tk):
         advanced_frame_placeholder.grid(row=3, column=0, columnspan=3, pady=(6, 10))
 
         # Row 4: The main button area, in the same fixed position.
-        self._create_standard_button_area(parent_frame, "Level 3",
+        self._create_standard_button_area(parent_frame, "NAND Reconstruction",
                                           self._start_level3_threaded,
                                           "start_level3_button")
         self._update_button_colors()
@@ -3307,7 +3397,7 @@ class SwitchGuiApp(tk.Tk):
             self._re_enable_buttons()    
 
     def _get_keys_from_sd(self):
-        """Detect SD card and copy prod.keys to temp directory. Detects and imports donor PRODINFO ONLY when on Level 3 tab."""
+        """Detect SD card and copy prod.keys to temp directory. Detects and imports donor PRODINFO ONLY when on NAND Reconstruction tab."""
         try:
             sd_drive = self._detect_switch_sd_card_wmi()
             if not sd_drive:
@@ -3378,7 +3468,7 @@ class SwitchGuiApp(tk.Tk):
 
             # Only show PRODINFO status if on Level 3 tab
             if is_level3:
-                status_message += f"  {check_mark if prodinfo_found else cross_mark}  PRODINFO (Optional for Level 3)\n\n"
+                status_message += f"  {check_mark if prodinfo_found else cross_mark}  PRODINFO (Optional for NAND Reconstruction)\n\n"
             else:
                 status_message += "\n"
 
@@ -3426,7 +3516,7 @@ class SwitchGuiApp(tk.Tk):
 
                 # Show popup asking if user wants to edit the PRODINFO
                 dialog = CustomDialog(self, title="PRODINFO Detected",
-                                    message=f"Found PRODINFO file: {donor_prodinfo_path.name}\n\nWould you like to edit it (serial, colors, WiFi region) before using in Level 3?",
+                                    message=f"Found PRODINFO file: {donor_prodinfo_path.name}\n\nWould you like to edit it (serial, colors, WiFi region) before using in NAND Reconstruction?",
                                     buttons="yesno")
 
                 if dialog.result:
@@ -3687,9 +3777,21 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"WARNING: Could not clean up process temp directory {folder}: {e}")
             return False
 
+    def _confirm_nand_reconstruction(self):
+        return bool(NANDReconstructionDialog(self, "NAND Reconstruction: Warning").result)
+
+    def _unlock_nand_reconstruction(self):
+        if not self._confirm_nand_reconstruction():
+            return
+        self.nand_reconstruction_unlocked = True
+        self._build_level3_tab()
+        self._validate_paths_and_update_buttons()
+
     def _start_level3_threaded(self):
+        if not self._confirm_nand_reconstruction():
+            return
         self.progress_value.set(0)
-        self.status_text.set("Starting Level 3 process")
+        self.status_text.set("Starting NAND Reconstruction process")
         self._disable_buttons()
         thread = threading.Thread(target=self._start_level3_process); 
         thread.daemon = True; 
@@ -3829,7 +3931,7 @@ class SwitchGuiApp(tk.Tk):
             self.destroy()
             
     def _start_level3_process(self):
-        self._log("--- Starting Level 3 Complete Recovery Process ---")
+        self._log("--- Starting NAND Reconstruction Complete Recovery Process ---")
         temp_dir = None
         try:
             pythoncom.CoInitialize() # <--- ADD THIS LINE
@@ -3867,7 +3969,7 @@ class SwitchGuiApp(tk.Tk):
 
         except Exception as e:
             self._log(f"An unexpected critical error occurred: {e}\n{traceback.format_exc()}")
-            self._log(f"\nINFO: Level 3 process finished with an error.")
+            self._log(f"\nINFO: NAND Reconstruction process finished with an error.")
             if temp_dir:
                 self._log(f"INFO: Process files retained for inspection at: {temp_dir}")
         finally:
@@ -3878,10 +3980,10 @@ class SwitchGuiApp(tk.Tk):
     def _run_level3_process(self, temp_dir):
         if self.offline_mode.get():
             self._log("\n--- OFFLINE MODE ---")
-            self._log("Level 3 will create a completely reconstructed NAND file.")
+            self._log("NAND Reconstruction will create a completely reconstructed NAND file.")
         else:
             self._log("\n--- WARNING ---")
-            self._log("Level 3 will completely overwrite your Switch's eMMC with a reconstructed NAND.")
+            self._log("NAND Reconstruction will overwrite existing NAND structures and reset user data using a reconstructed NAND.")
             self._log("This is irreversible. Ensure you have backups and a stable connection.")
 
         # Determine target size for offline mode or get from physical eMMC
@@ -3937,10 +4039,10 @@ class SwitchGuiApp(tk.Tk):
             # Confirm with user
             msg = (f"Found target {target_drive.get('type', 'eMMC')}:\n\nPath: {target_path}\nSize: {target_drive['size']}\nModel: {target_drive['model']}\n\n"
                    "WARNING: ALL DATA ON THIS DRIVE WILL BE PERMANENTLY ERASED.\n\n"
-                   "This will perform a complete Level 3 recovery. Continue?")
+                   "This will perform a complete NAND Reconstruction recovery. Continue?")
 
-            if not self._dialog("Confirm Level 3 Recovery", msg, buttons="yesno"):
-                self._log("--- User cancelled Level 3 recovery.")
+            if not self._dialog("Confirm NAND Reconstruction Recovery", msg, buttons="yesno"):
+                self._log("--- User cancelled NAND Reconstruction recovery.")
                 return
 
             self._log(f"SUCCESS: User confirmed target eMMC at {target_path} ({target_drive['size']})")
@@ -4058,7 +4160,7 @@ class SwitchGuiApp(tk.Tk):
             source_system_path = versioned_folder / "SYSTEM"
             
             # For Level 3, complete replacement of specific folders
-            self._log("--- Modifying SYSTEM partition for Level 3...")
+            self._log("--- Modifying SYSTEM partition for NAND Reconstruction...")
             
             # Replace Contents/registered completely
             registered_dest = drive_letter / "Contents" / "registered"
@@ -4155,7 +4257,7 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"SUCCESS: BOOT0 saved to {boot0_output}")
             self._log(f"SUCCESS: BOOT1 saved to {boot1_output}")
 
-            self._log("\n--- LEVEL 3 OFFLINE RECOVERY COMPLETE ---")
+            self._log("\n--- NAND RECONSTRUCTION OFFLINE RECOVERY COMPLETE ---")
             self._log(f"IMPORTANT: Split NAND created at: {output_folder}")
             self._log(f"BOOT files saved to: {output_folder}")
             self._log("Flash these files to your Switch using appropriate tools.")
@@ -4163,8 +4265,8 @@ class SwitchGuiApp(tk.Tk):
             self.button_states["level3"] = "completed"
             self._update_button_colors()
 
-            self._dialog("Level 3 Complete",
-                         f"Level 3 offline recovery completed successfully!\n\n" +
+            self._dialog("NAND Reconstruction Complete",
+                         f"NAND Reconstruction offline recovery completed successfully!\n\n" +
                          f"Split NAND (2 GiB parts): {output_folder}\n" +
                          f"BOOT0: {boot0_output}\n" +
                          f"BOOT1: {boot1_output}\n\n" +
@@ -4185,18 +4287,18 @@ class SwitchGuiApp(tk.Tk):
             shutil.copy(versioned_folder / "BOOT1.bin", Path(temp_dir) / "BOOT1")
             self._log(f"SUCCESS: BOOT0 and BOOT1 saved to {temp_dir}")
 
-            self._log(f"\n--- Level 3 Recovery Complete!")
+            self._log(f"\n--- NAND Reconstruction Recovery Complete!")
             self._log("IMPORTANT: Please flash BOOT0 and BOOT1 manually using Hekate for safety.")
             self._log("Your Switch should now boot with the reconstructed NAND.")
-            self._log("\n--- LEVEL 3 COMPLETE RECOVERY FINISHED ---")
+            self._log("\n--- NAND RECONSTRUCTION COMPLETE RECOVERY FINISHED ---")
 
             self.button_states["copy_boot"] = "active"
             self.button_states["level3"] = "completed"
             self._validate_paths_and_update_buttons()
             self._update_button_colors()
 
-            self._dialog("Level 3 Complete",
-                         "Level 3 recovery completed successfully!\n\n" +
+            self._dialog("NAND Reconstruction Complete",
+                         "NAND Reconstruction recovery completed successfully!\n\n" +
                          "Don't forget to flash BOOT0 and BOOT1 using Hekate.\n\n" +
                          "Your Switch should now boot normally.")
         return True
@@ -4509,7 +4611,7 @@ class SwitchGuiApp(tk.Tk):
                         f"Available in temp: {avail_gb:.1f} GB\n\n"
                         f"NANDFixPro will:\n"
                         f"  1. Read & join all parts from source into temp\n"
-                        f"  2. Run Level 1 / 2 as normal\n"
+                        f"  2. Run System Repair / Clean Install as normal\n"
                         f"  3. Save the fixed NAND in the same source format\n\n"
                         f"Continue with this split NAND source?"
                     )
@@ -4553,7 +4655,7 @@ class SwitchGuiApp(tk.Tk):
                                 # Show popup with console type
                                 prodinfo_filename = os.path.basename(path)
                                 dialog = CustomDialog(self, title="PRODINFO Selected",
-                                                    message=f"Selected: {prodinfo_filename}\n\nConsole Type: {console_name}\n\nWould you like to edit it (serial, colors, WiFi region) before using in Level 3?",
+                                                    message=f"Selected: {prodinfo_filename}\n\nConsole Type: {console_name}\n\nWould you like to edit it (serial, colors, WiFi region) before using in NAND Reconstruction?",
                                                     buttons="yesno")
 
                                 if dialog.result:
@@ -4646,9 +4748,9 @@ class SwitchGuiApp(tk.Tk):
                 self._log(f"INFO: Created temporary directory at: {temp_dir}")
 
             # Run the process
-            if level == "Level 1":
+            if level == "System Repair":
                 completed = self._run_level1_process(temp_dir)
-            elif level == "Level 2":
+            elif level == "Clean Install":
                 completed = self._run_level2_process(temp_dir)
             else:
                 return
@@ -4676,7 +4778,7 @@ class SwitchGuiApp(tk.Tk):
 
     def _selective_copy_system_contents_level1(self, source_system_path, drive_letter):
         """
-        Level 1: Delete only registered folder, then merge everything from EmmcHaccGen
+        System Repair: Delete only registered folder, then merge everything from EmmcHaccGen
         This overwrites matching files but preserves existing files that aren't in the source
         """
         try:
@@ -4919,10 +5021,10 @@ class SwitchGuiApp(tk.Tk):
     def _run_level1_process(self, temp_dir):
         if self.offline_mode.get():
             self._log("\n--- OFFLINE MODE ---")
-            self._log("The Level 1 process will create a fixed NAND file.")
+            self._log("The System Repair process will create a fixed NAND file.")
         else:
             self._log("\n--- WARNING ---")
-            self._log("The Level 1 process will write directly to your Switch's eMMC.")
+            self._log("The System Repair process will write directly to your Switch's eMMC.")
 
         if not self._check_disk_space(60):
             return
@@ -4946,13 +5048,13 @@ class SwitchGuiApp(tk.Tk):
         
         if self._run_command(dump_cmd)[0] != 0 or not prodinfo_path.exists():
             self._log(f"ERROR: Failed to dump or decrypt PRODINFO from the {source_type}. It may be corrupt.")
-            self._dialog("PRODINFO Error", "PRODINFO is not found or damaged. Please use Level 3 instead.")
+            self._dialog("PRODINFO Error", "Could not read or decrypt a valid PRODINFO. Check your keys, NAND source, and backups first. A read failure does not mean the eMMC is empty or requires NAND Reconstruction.")
             return
 
         with open(prodinfo_path, 'rb') as f:
             if f.read(4) != b'CAL0':
                 self._log(f"ERROR: The PRODINFO dumped from the {source_type} is invalid or encrypted (magic is not CAL0).")
-                self._dialog("PRODINFO Error", "PRODINFO is not found or damaged. Please use Level 3 instead.")
+                self._dialog("PRODINFO Error", "Could not read or decrypt a valid PRODINFO. Check your keys, NAND source, and backups first. A read failure does not mean the eMMC is empty or requires NAND Reconstruction.")
                 return
 
         self._log("SUCCESS: PRODINFO is valid and decrypted.")
@@ -5060,17 +5162,17 @@ class SwitchGuiApp(tk.Tk):
             # Keep the source format when splitting the fixed output.
             if not self._resplit_if_needed(nand_source, boot0_output, boot1_output, temp_dir):
                 return
-            self._log("\n--- Level 1 Offline System Restore completed successfully! ---")
+            self._log("\n--- System Repair Offline System Restore completed successfully! ---")
             self._log(f"IMPORTANT: Split NAND ready at: {self._split_output_dir}")
 
             if self._split_nand_context and self._split_nand_context['format'] == 'emummc_sd':
-                self._dialog("Level 1 Complete",
-                             f"Level 1 process completed successfully!\n\n"
+                self._dialog("System Repair Complete",
+                             f"System Repair process completed successfully!\n\n"
                              f"Fixed emuMMC files are ready at:\n{self._split_output_dir}\n\n"
                              f"Copy all files from this folder back to the original emuMMC SD Files folder and replace the existing files.")
             else:
-                self._dialog("Level 1 Complete",
-                             f"Level 1 process completed successfully!\n\n" +
+                self._dialog("System Repair Complete",
+                             f"System Repair process completed successfully!\n\n" +
                              f"Split NAND backup (2 GiB parts): {self._split_output_dir}\n" +
                              f"BOOT0/BOOT1: {self._split_output_dir}\n\n" +
                              f"Flash these files to your Switch using appropriate tools.")
@@ -5101,12 +5203,12 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"SUCCESS: BOOT0 and BOOT1 saved to {temp_dir}")
 
             # Final message for online mode
-            self._log("\n--- Level 1 System Restore completed successfully! ---")
+            self._log("\n--- System Repair System Restore completed successfully! ---")
             self.button_states["level1"] = "completed"
             self.button_states["copy_boot"] = "active"
             self._validate_paths_and_update_buttons()
             self._update_button_colors()
-            self._dialog("Level 1 Complete", "Level 1 System Restore completed successfully!\n\nYou can now copy boot files to your SD card.")
+            self._dialog("System Repair Complete", "System Repair System Restore completed successfully!\n\nYou can now copy boot files to your SD card.")
         
         self.button_states["level1"] = "completed"
         self.button_states["copy_boot"] = "active"
@@ -5139,10 +5241,10 @@ class SwitchGuiApp(tk.Tk):
     def _run_level2_process(self, temp_dir):
         if self.offline_mode.get():
             self._log("\n--- OFFLINE MODE ---")
-            self._log("The Level 2 process will create a fixed NAND file.")
+            self._log("The Clean Install process will create a fixed NAND file.")
         else:
             self._log("\n--- WARNING ---")
-            self._log("The Level 2 process will write directly to your Switch's eMMC.")
+            self._log("The Clean Install process will write directly to your Switch's eMMC.")
 
         # Get NAND source (file or device)
         if not self.offline_mode.get():
@@ -5180,7 +5282,7 @@ class SwitchGuiApp(tk.Tk):
             donor_path = Path(self.paths['prodinfo'].get())
             if not donor_path.is_file():
                 self._log(f"ERROR: PRODINFO could not be dumped from {source_type} and no donor file was provided.")
-                self._dialog("PRODINFO Error", "PRODINFO is not found or damaged. Please use Level 3 instead.")
+                self._dialog("PRODINFO Error", "Could not read or decrypt a valid PRODINFO. Check your keys, NAND source, and backups first. A read failure does not mean the eMMC is empty or requires NAND Reconstruction.")
                 return
             shutil.copy(donor_path, prodinfo_path)
             donor_prodinfo_used = True
@@ -5191,7 +5293,7 @@ class SwitchGuiApp(tk.Tk):
             if f.read(4) != b'CAL0':
                 source = "donor file" if donor_prodinfo_used else source_type
                 self._log(f"ERROR: The PRODINFO from the {source} is invalid or encrypted (magic is not CAL0).")
-                self._dialog("PRODINFO Error", "PRODINFO is not found or damaged. Please use Level 3 instead.")
+                self._dialog("PRODINFO Error", "Could not read or decrypt a valid PRODINFO. Check your keys, NAND source, and backups first. A read failure does not mean the eMMC is empty or requires NAND Reconstruction.")
                 return
 
         self._log(f"\n[STEP 3/7] Reading PRODINFO file...")
@@ -5314,17 +5416,17 @@ class SwitchGuiApp(tk.Tk):
             # Keep the source format when splitting the rebuilt output.
             if not self._resplit_if_needed(nand_source, boot0_output, boot1_output, temp_dir):
                 return
-            self._log("\n--- LEVEL 2 OFFLINE REBUILD COMPLETE ---")
+            self._log("\n--- CLEAN INSTALL OFFLINE REBUILD COMPLETE ---")
             self._log(f"IMPORTANT: Split NAND ready at: {self._split_output_dir}")
 
             if self._split_nand_context and self._split_nand_context['format'] == 'emummc_sd':
-                self._dialog("Level 2 Complete",
-                             f"Level 2 rebuild completed successfully!\n\n"
+                self._dialog("Clean Install Complete",
+                             f"Clean Install rebuild completed successfully!\n\n"
                              f"Rebuilt emuMMC files are ready at:\n{self._split_output_dir}\n\n"
                              f"Copy all files from this folder back to the original emuMMC SD Files folder and replace the existing files.")
             else:
-                self._dialog("Level 2 Complete",
-                             f"Level 2 rebuild completed successfully!\n\n" +
+                self._dialog("Clean Install Complete",
+                             f"Clean Install rebuild completed successfully!\n\n" +
                              f"Split NAND backup (2 GiB parts): {self._split_output_dir}\n" +
                              f"BOOT0/BOOT1: {self._split_output_dir}\n\n" +
                              f"Your NAND file has been completely rebuilt.\n" +
@@ -5370,10 +5472,10 @@ class SwitchGuiApp(tk.Tk):
             shutil.copy(versioned_folder / "BOOT0.bin", Path(temp_dir) / "BOOT0")
             shutil.copy(versioned_folder / "BOOT1.bin", Path(temp_dir) / "BOOT1")
             self._log(f"SUCCESS: BOOT0 and BOOT1 saved. Please flash them manually using Hekate.")
-            self._log("\n--- LEVEL 2 IN-PLACE REBUILD COMPLETE ---")
+            self._log("\n--- CLEAN INSTALL IN-PLACE REBUILD COMPLETE ---")
 
-            self._dialog("Level 2 Complete",
-                         "Level 2 rebuild completed successfully!\n\n" +
+            self._dialog("Clean Install Complete",
+                         "Clean Install rebuild completed successfully!\n\n" +
                          "NEXT STEP: Disconnect USB cable, reconnect, and mount SD card in Hekate.\n" +
                          "Then click 'Copy BOOT to SD' button.")
 

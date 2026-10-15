@@ -1,7 +1,7 @@
 # NAND Fix Pro
 
 
-[![Version](https://img.shields.io/badge/version-2.4-blue.svg)](https://github.com/sthetix/NANDFixPro/releases)
+[![Version](https://img.shields.io/badge/version-2.5-blue.svg)](https://github.com/sthetix/NANDFixPro/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4.svg)](https://www.microsoft.com/windows/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -12,13 +12,13 @@
 A comprehensive GUI tool for Nintendo Switch NAND repair, designed to simplify complex recovery processes into a user-friendly, step-by-step interface.
 
 
-NAND Fix Pro provides three distinct levels of repair, from a simple system file restore that preserves your data to a complete NAND reconstruction for catastrophic failures. It automates the use of essential community tools like **EmmcHaccGen**, **NxNandManager**, and **OSFMount** behind a clean and safe interface.
+NAND Fix Pro provides three distinct repair modes, from a simple system file restore that preserves your data to a complete NAND reconstruction for catastrophic failures. It automates the use of essential community tools like **EmmcHaccGen**, **NxNandManager**, and **OSFMount** behind a clean and safe interface.
 
 ---
 
 ## Features
 
--   **Three-Tiered Repair System**: Choose the right level of repair for your specific issue.
+-   **Three Repair Modes**: Choose the right repair mode for your specific issue.
 -   **Live and Offline Modes**: Work directly with a Hekate-mounted eMMC/emuMMC device, or repair a NAND backup file without writing to hardware.
 -   **User-Friendly GUI**: A modern, dark-themed interface that guides you through every step. No command-line knowledge required.
 -   **Automatic Path Detection**: The application automatically finds its required tools from the `lib` folder.
@@ -32,23 +32,23 @@ NAND Fix Pro provides three distinct levels of repair, from a simple system file
 
 ---
 
-## The Three Levels of Repair
+## The Three Repair Modes
 
-####  Level 1: System Restore (Data Preserved)
+####  System Repair (Data Preserved)
 * **What it does**: Dumps the SYSTEM partition from your Switch, replaces the core OS files with clean ones generated from your firmware, and flashes it back.
 * **When to use it**: Ideal for fixing boot issues caused by a failed system update, a bad custom theme, or general software corruption where your save games and installed titles are still intact.
 * **Outcome**: Your console's OS is repaired, and all your user data (saves, games, profiles) is preserved.
 
-####  Level 2: Full Rebuild (User Data Erased)
+####  Clean Install (User Data Erased)
 * **What it does**: Uses your Switch's unique PRODINFO to rebuild the entire NAND using clean, pre-packaged donor partitions.
 * **When to use it**: Use this when multiple partitions (not just SYSTEM) are corrupt, but your console's PRODINFO is still readable and intact.
 * **Outcome**: Your console is restored to a factory-like state. **All user data will be erased.**
-* **New Advanced Option** - Fix USER Partition: This level now includes a separate, advanced function to repair only a corrupt USER partition without touching the rest of the OS. This is a faster alternative if your problem is isolated to user data corruption (e.g., being unable to boot past the setup screen). Like the full rebuild, this process will also erase all user data.
+* **New Advanced Option** - Fix USER Partition: This mode includes a separate, advanced function to repair only a corrupt USER partition without touching the rest of the OS. This is a faster alternative if your problem is isolated to user data corruption (e.g., being unable to boot past the setup screen). Like Clean Install, this process will also erase all user data.
 
-####  Level 3: Complete Recovery (Last Resort)
-* **What it does**: Reconstructs a complete NAND from scratch using a **donor PRODINFO file** and a pre-built NAND skeleton. It automatically detects the eMMC size (32GB/64GB) to use the correct template.
-* **When to use it**: This is the final option for a completely dead or lost NAND where even the original PRODINFO is gone or corrupt.
-* **Outcome**: A brand new, functional NAND is written to the eMMC. **This is a total overwrite.**
+####  NAND Reconstruction (Last Resort)
+* **What it does**: Reconstructs a complete NAND from scratch using an **original or donor decrypted PRODINFO file** and a pre-built NAND skeleton. It automatically detects the eMMC size (32GB/64GB) to use the correct template.
+* **When to use it**: Use only when NAND reconstruction is necessary. No backup does not mean the eMMC is empty: check and back up readable NAND data and original PRODINFO first. Original or donor PRODINFO can be used.
+* **Outcome**: A NAND image is reconstructed from a template. Live mode overwrites NAND structures and resets user data; offline mode saves the reconstructed image. **Original user data is not recovered.** Unlocking and starting require a freshly shuffled sequence of arrow keys and A/B/X/Y, displayed in each popup. No Enter is needed; a wrong key resets progress. Resetting the application locks NAND Reconstruction again.
 
 ---
 
@@ -64,7 +64,7 @@ NAND Fix Pro provides three distinct levels of repair, from a simple system file
 
 ## Tools & Advanced Options
 
--   **Get Keys from SD**: Detects a Hekate-mounted SD card and imports `prod.keys`; Level 3 can also import donor `PRODINFO` when available.
+-   **Get Keys from SD**: Detects a Hekate-mounted SD card and imports `prod.keys`; NAND Reconstruction can also import donor `PRODINFO` when available.
 -   **Advanced USER Partition Fix**: Repairs only the USER partition from clean donor data. This still erases user data, but avoids a full rebuild when the damage is isolated.
 -   **PRODINFO Editor**: Edit serial, WiFi region, and color fields, then recalculate checksums and verify PRODINFO integrity.
 -   **Console Type Override**: Manually choose Erista or Mariko if automatic PRODINFO-based model detection is not appropriate.
@@ -79,7 +79,7 @@ Before using this tool, you will need to provide:
 
 1.  **Your Keys File**: A `prod.keys` file dumped from your own console.
 2.  **Firmware Files**: A folder containing the extracted firmware for the version you wish to install.
-3.  **(Level 3 Only)**: A decrypted donor `PRODINFO` file if your original is lost.
+3.  **(NAND Reconstruction Only)**: A decrypted donor `PRODINFO` file if your original is lost.
 
 All other required tools and donor partitions are included in the release package.
 
@@ -89,7 +89,7 @@ All other required tools and donor partitions are included in the release packag
 
 ### Download and Extract
 
-1. Download the `NAND-Fix-Pro-v2.3.exe` file from the [latest release page](https://github.com/sthetix/NANDFixPro/releases).
+1. Download the `NAND-Fix-Pro-v2.5.exe` file from the [latest release page](https://github.com/sthetix/NANDFixPro/releases).
 2. **Important**: The downloaded `.exe` file is actually a **7-Zip self-extracting archive**. When you run it or extract it, Windows Defender may flag the `NANDFixPro.exe` launcher as a potential threat.
 
 ### False Positive Warning
@@ -113,7 +113,7 @@ To use NAND Fix Pro, you'll need to add an exclusion to Windows Defender:
 4. Scroll down to **Exclusions** and click **Add or remove exclusions**
 5. Click **Add an exclusion** and select **Folder**
 6. Navigate to and select the folder where you plan to extract NAND Fix Pro
-7. Now extract the `NAND-Fix-Pro-v2.3.exe` to that folder
+7. Now extract the `NAND-Fix-Pro-v2.5.exe` to that folder
 
 #### Method 2: Restore Quarantined File
 
@@ -145,7 +145,7 @@ Getting started is designed to be as simple as possible.
 ### 1. Prepare Your Console and Files
 * **CRITICAL: Create a full NAND backup using Hekate before doing anything else.** This is your essential safety net and must be done regardless of which repair level you plan to use. Without this backup, you cannot recover if something goes wrong.
 * Get your unique console files. Use **Lockpick RCM** to dump your `prod.keys` file. **You must copy this file from your Switch's SD card to your computer**, as the tool needs it for all operations.
-* If you're performing a **Level 3: Complete Recovery**, you will also need a decrypted **donor** `PRODINFO` file. If you used the `prodinfo_gen` tool to create one, **ensure you copy this file to your computer as well**.
+* If you're performing a **NAND Reconstruction**, you will also need a decrypted **original or donor** `PRODINFO` file. If you used the `prodinfo_gen` tool to create one, **ensure you copy this file to your computer as well**.
 * Prepare a USB cable to connect your Switch to your computer. **Use a USB 2.0 port** — connecting via USB 3.0 can cause instability and booting issues during eMMC access.
 
 ### 2. Connect and Configure with Hekate
@@ -155,7 +155,7 @@ Getting started is designed to be as simple as possible.
 * Select **eMMC RAW GPP**. This makes your Switch's eMMC accessible to your computer.
 
 ### 3. Run the Tool
-* Download the `NAND-Fix-Pro-v2.3.exe` file from the [latest release page](https://github.com/sthetix/NANDFixPro/releases).
+* Download the `NAND-Fix-Pro-v2.5.exe` file from the [latest release page](https://github.com/sthetix/NANDFixPro/releases).
 * Run or extract the self-extracting archive to a folder on your computer.
 * Simply **double-click the `NANDFixPro.exe`** file.
 
